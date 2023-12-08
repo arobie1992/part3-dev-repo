@@ -197,17 +197,13 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
                     
                     //In the event instruction makes a call
                     if(isa<CallInst>(&I)){
-                        // errs() << "Call instr: " << I << "\n";
+                        // errs() << "Call: " << I << "\n";
                         auto &callType = cast<CallInst>(I);
-                        //Make sure call instruction is direct and skip otherwise
                         if(callType.isIndirectCall()) continue;
-                        //Make sure the program is running with the -g flag
-                        // if(callType.getDebugFlag() == nullptr) continue;
-                        //ENSURE THIS IS CORRECT
-                        if(callType.getDebugLoc().getLine() == 0) continue;
+                        if(!callType.getDebugLoc()) continue;
                         //get the name of the function call
-                        auto function = callType.getCalledFunction()->getName();
-                        // errs() << function << "\n";
+                        auto function = callType.getCalledOperand()->getName();
+                        // errs() << "function name:" << function << "\n";
                         if(function == "getc") {
                             auto semInput = SemInput(callType.getOperand(0), "");
                             vector.push_back(semInput);
@@ -243,11 +239,9 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
             vector.pop_back();
             // get the LLVM instruction
             Value *val = si.instruction;
-            errs() << "Val: " << *val << "\n";
         
             //Iterate through every value for instructions
             for(User *user : val->users()){
-                errs() << "User: " << *user << "\n";
                 if(isa<LoadInst>(user) || isa<ICmpInst>(user)) {
                     // we want to follow references to the value through whatever path they may take to an eventual branch or switch
                     auto addedSi = SemInput(user, si.variableName);
@@ -261,14 +255,14 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
                 //repeat for switch instructions
                 if(isa<SwitchInst>(user)){
                     auto switchType = dyn_cast<SwitchInst>(user);
-                    errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< switchType->getOperand(0)->getName() << "\n";
+                    errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< si.variableName << "\n";
                 }
                 //repeat for call functions
                 if(isa<CallInst>(user)){
                     auto callType = dyn_cast<CallInst>(user);
                     if(callType == val){
                         if(auto debugLoc = callType->getDebugLoc()){
-                            errs() << "Line " << debugLoc.getLine() << ": size of " << callType->getOperand(0)->getName() << "\n";
+                            errs() << "Line " << debugLoc.getLine() << ": size of " << si.variableName << "\n";
                         }
                     }
                 }
@@ -281,8 +275,9 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
             // skip branchlog since it's not part of the user program we want to instrument
             return PreservedAnalyses::all();
         }
-        part1(M, AM);
+        // running part 2 first may seem counterintuitive, but avoids analyzing the instrumented code
         part2(M);
+        part1(M, AM);
         return PreservedAnalyses::none();
     };
 };
