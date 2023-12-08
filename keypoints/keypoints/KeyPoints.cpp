@@ -142,8 +142,7 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
             return 0;
         }
     }
-    public:
-    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+    void part1(Module &M, ModuleAnalysisManager &AM) {
         counter = initCounter();
         for (auto &F : M) {
             for (auto &B : F) {
@@ -165,6 +164,68 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
         }
         writeBranchDictionary(branchEntries);
         recordCounter(counter);
+    }
+    void part2(Module &M) {
+        //list of values that will determine 
+        std::vector<Value *> vector;
+        errs() << "Analyzing file: " << M.getName() << "\n";
+        for (Function &F : M){
+            for (BasicBlock &BB : F) {
+                for (Instruction &I : BB) {
+                    //Look for certain branches
+                    
+                    //In the event instruction makes a call
+                    if(isa<CallInst>(&I)){
+                        auto &callType = cast<CallInst>(I);
+                        //Make sure call instruction is direct and skip otherwise
+                        if(callType.isIndirectCall()) continue;
+                        //Make sure the program is running with the -g flag
+                        // if(callType.getDebugFlag() == nullptr) continue;
+                        //ENSURE THIS IS CORRECT
+                        if(callType.getDebugLoc().getLine() == 0) continue;
+                        //get the name of the function call
+                        auto function = callType.getCalledFunction()->getName();
+                        if(function == "getc") vector.push_back(callType.getOperand(0));
+                        if(function == "fopen") vector.push_back(callType.getOperand(1));
+                        if(function == "scanf") vector.push_back(callType.getOperand(1));
+                        if(function == "fclose") vector.push_back(callType.getOperand(0));
+                        if(function == "fread") vector.push_back(callType.getOperand(1));
+                        if(function == "fwrite") vector.push_back(callType.getOperand(1));
+                    }
+                }
+            }
+        }
+        //Second loop for seminal analysis
+        for(Value *val : vector){
+            //TODO: ensure code functions properly
+            //Iterate through every value for instructions
+            for(User *user : val->users()){
+                //Check branch instructions for seminal length instructions
+                if(isa<BranchInst>(user)){
+                    auto branchType = dyn_cast<BranchInst>(user);
+                    if(branchType == val) errs() << "Line " << branchType->getDebugLoc().getLine() << ": " << branchType->getOperand(0)->getName() << "\n";
+                }
+                //repeat for switch instructions
+                if(isa<SwitchInst>(user)){
+                    auto switchType = dyn_cast<SwitchInst>(user);
+                    if(switchType == val) errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< switchType->getOperand(0)->getName() << "\n";
+                }
+                //repeat for call functions
+                if(isa<CallInst>(user)){
+                    auto callType = dyn_cast<CallInst>(user);
+                    if(callType == val){
+                        if(auto debugLoc = callType->getDebugLoc()){
+                            errs() << "Line " << debugLoc.getLine() << ": size of " << callType->getOperand(0)->getName() << "\n";
+                        }
+                    }
+                }
+            }
+        }
+    }
+    public:
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        part1(M, AM);
+        part2(M);
         return PreservedAnalyses::none();
     };
 };
