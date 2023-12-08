@@ -8,3 +8,4 @@ keypoints/build
 **/tmp-*/
 **/counter.log
 test-runs/
+**/fileops_test_file.txt
