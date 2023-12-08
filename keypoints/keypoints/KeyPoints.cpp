@@ -3,6 +3,7 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/DebugInfo.h"
 #include <string>
 #include <iostream>
 #include <fstream>
@@ -40,6 +41,25 @@ void writeBranchDictionary(std::vector<BranchEntry> &branchEntries) {
     }
     branch_dict.close();
 }
+
+class SemInput {
+    public:
+    Value *instruction;
+    StringRef variableName;
+    SemInput(Value *instruction, StringRef variableName): instruction(instruction) {
+        if(variableName == "") {
+            TinyPtrVector<DbgDeclareInst *> DIs = FindDbgDeclareUses(instruction);
+            for (DbgDeclareInst *ddi: DIs) {
+                this->variableName = ddi->getVariable()->getName();
+                // we only care about the first one
+                break;
+            }
+        }
+        else {
+            this->variableName = variableName;
+        }
+    }
+};
 
 struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
     private: 
@@ -167,15 +187,17 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
     }
     void part2(Module &M) {
         //list of values that will determine 
-        std::vector<Value *> vector;
+        std::vector<SemInput> vector;
         errs() << "Analyzing file: " << M.getName() << "\n";
         for (Function &F : M){
+            // errs() << F << "\n";
             for (BasicBlock &BB : F) {
                 for (Instruction &I : BB) {
                     //Look for certain branches
                     
                     //In the event instruction makes a call
                     if(isa<CallInst>(&I)){
+                        // errs() << "Call instr: " << I << "\n";
                         auto &callType = cast<CallInst>(I);
                         //Make sure call instruction is direct and skip otherwise
                         if(callType.isIndirectCall()) continue;
@@ -185,30 +207,61 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
                         if(callType.getDebugLoc().getLine() == 0) continue;
                         //get the name of the function call
                         auto function = callType.getCalledFunction()->getName();
-                        if(function == "getc") vector.push_back(callType.getOperand(0));
-                        if(function == "fopen") vector.push_back(callType.getOperand(1));
-                        if(function == "scanf") vector.push_back(callType.getOperand(1));
-                        if(function == "fclose") vector.push_back(callType.getOperand(0));
-                        if(function == "fread") vector.push_back(callType.getOperand(1));
-                        if(function == "fwrite") vector.push_back(callType.getOperand(1));
+                        // errs() << function << "\n";
+                        if(function == "getc") {
+                            auto semInput = SemInput(callType.getOperand(0), "");
+                            vector.push_back(semInput);
+                        }
+                        if(function == "fopen") {
+                            auto semInput = SemInput(callType.getOperand(1), "");
+                            vector.push_back(semInput);
+                        }
+                        if(function == "__isoc99_scanf"){ 
+                            auto semInput = SemInput(callType.getOperand(1), "");
+                            vector.push_back(semInput);
+                        }
+                        if(function == "fclose") {
+                            auto semInput = SemInput(callType.getOperand(0), "");
+                            vector.push_back(semInput);
+                        }
+                        if(function == "fread") {
+                            auto semInput = SemInput(callType.getOperand(1), "");
+                            vector.push_back(semInput);
+                        }
+                        if(function == "fwrite") {
+                            auto semInput = SemInput(callType.getOperand(1), "");
+                            vector.push_back(semInput);
+                        }
                     }
                 }
             }
         }
         //Second loop for seminal analysis
-        for(Value *val : vector){
-            //TODO: ensure code functions properly
+        while(!vector.empty()) {
+            // get and remove the last element
+            SemInput si = vector.back();
+            vector.pop_back();
+            // get the LLVM instruction
+            Value *val = si.instruction;
+            errs() << "Val: " << *val << "\n";
+        
             //Iterate through every value for instructions
             for(User *user : val->users()){
+                errs() << "User: " << *user << "\n";
+                if(isa<LoadInst>(user) || isa<ICmpInst>(user)) {
+                    // we want to follow references to the value through whatever path they may take to an eventual branch or switch
+                    auto addedSi = SemInput(user, si.variableName);
+                    vector.push_back(addedSi);
+                }
                 //Check branch instructions for seminal length instructions
                 if(isa<BranchInst>(user)){
                     auto branchType = dyn_cast<BranchInst>(user);
-                    if(branchType == val) errs() << "Line " << branchType->getDebugLoc().getLine() << ": " << branchType->getOperand(0)->getName() << "\n";
+                    errs() << "Line " << branchType->getDebugLoc().getLine() << ": " << si.variableName << "\n";
                 }
                 //repeat for switch instructions
                 if(isa<SwitchInst>(user)){
                     auto switchType = dyn_cast<SwitchInst>(user);
-                    if(switchType == val) errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< switchType->getOperand(0)->getName() << "\n";
+                    errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< switchType->getOperand(0)->getName() << "\n";
                 }
                 //repeat for call functions
                 if(isa<CallInst>(user)){
@@ -224,6 +277,10 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
     }
     public:
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM) {
+        if(M.getName().find("branchlog.c") != -1) {
+            // skip branchlog since it's not part of the user program we want to instrument
+            return PreservedAnalyses::all();
+        }
         part1(M, AM);
         part2(M);
         return PreservedAnalyses::none();
