@@ -186,46 +186,48 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
         recordCounter(counter);
     }
     void part2(Module &M) {
-        //list of values that will determine 
         std::vector<SemInput> vector;
         errs() << "Analyzing file: " << M.getName() << "\n";
         for (Function &F : M){
-            // errs() << F << "\n";
             for (BasicBlock &BB : F) {
                 for (Instruction &I : BB) {
-                    //Look for certain branches
-                    
-                    //In the event instruction makes a call
                     if(isa<CallInst>(&I)){
-                        // errs() << "Call: " << I << "\n";
                         auto &callType = cast<CallInst>(I);
                         if(callType.isIndirectCall()) continue;
                         if(!callType.getDebugLoc()) continue;
-                        //get the name of the function call
                         auto function = callType.getCalledOperand()->getName();
-                        // errs() << "function name:" << function << "\n";
                         if(function == "getc") {
-                            auto semInput = SemInput(callType.getOperand(0), "");
+                            auto semInput = SemInput(&callType, "");
                             vector.push_back(semInput);
                         }
                         if(function == "fopen") {
-                            auto semInput = SemInput(callType.getOperand(1), "");
-                            vector.push_back(semInput);
+                            for(Value *user : callType.users()) {
+                                if (isa<StoreInst>(*user)) {
+                                    auto store = dyn_cast<StoreInst>(user);
+                                    auto semInput = SemInput(store->getPointerOperand(), "");
+                                    vector.push_back(semInput);
+                                }
+                            }
                         }
                         if(function == "__isoc99_scanf"){ 
                             auto semInput = SemInput(callType.getOperand(1), "");
                             vector.push_back(semInput);
                         }
                         if(function == "fclose") {
-                            auto semInput = SemInput(callType.getOperand(0), "");
+                            auto semInput = SemInput(&callType, "");
                             vector.push_back(semInput);
                         }
                         if(function == "fread") {
-                            auto semInput = SemInput(callType.getOperand(1), "");
-                            vector.push_back(semInput);
+                            auto buffOp = callType.getOperand(0);
+                            if(isa<LoadInst>(buffOp)) {
+                                auto loadInst = dyn_cast<LoadInst>(buffOp);
+                                auto buffDef = loadInst->getOperand(0);
+                                auto semInput = SemInput(buffDef, "");
+                                vector.push_back(semInput);
+                            }                        
                         }
                         if(function == "fwrite") {
-                            auto semInput = SemInput(callType.getOperand(1), "");
+                            auto semInput = SemInput(&callType, "");
                             vector.push_back(semInput);
                         }
                     }
@@ -239,33 +241,49 @@ struct KeyPointsPass : public PassInfoMixin<KeyPointsPass> {
             vector.pop_back();
             // get the LLVM instruction
             Value *val = si.instruction;
+            // errs() << "Val: " << *val << "\n";
         
             //Iterate through every value for instructions
             for(User *user : val->users()){
-                if(isa<LoadInst>(user) || isa<ICmpInst>(user)) {
-                    // we want to follow references to the value through whatever path they may take to an eventual branch or switch
-                    auto addedSi = SemInput(user, si.variableName);
-                    vector.push_back(addedSi);
-                }
-                //Check branch instructions for seminal length instructions
                 if(isa<BranchInst>(user)){
                     auto branchType = dyn_cast<BranchInst>(user);
-                    errs() << "Line " << branchType->getDebugLoc().getLine() << ": " << si.variableName << "\n";
+                    errs() << "Line " << branchType->getDebugLoc().getLine() << ": depends on " << si.variableName << "\n";
+                    continue;
                 }
                 //repeat for switch instructions
                 if(isa<SwitchInst>(user)){
                     auto switchType = dyn_cast<SwitchInst>(user);
-                    errs() << "Line " << switchType->getDebugLoc().getLine() << ": "<< si.variableName << "\n";
+                    errs() << "Line " << switchType->getDebugLoc().getLine() << ": depends on " << si.variableName << "\n";
+                    continue;
                 }
-                //repeat for call functions
-                if(isa<CallInst>(user)){
-                    auto callType = dyn_cast<CallInst>(user);
-                    if(callType == val){
-                        if(auto debugLoc = callType->getDebugLoc()){
-                            errs() << "Line " << debugLoc.getLine() << ": size of " << si.variableName << "\n";
+                if (isa<StoreInst>(user)) {
+                    auto store = dyn_cast<StoreInst>(user);
+                    // avoid direct cycles
+                    // will deal with indirect cycles if they come up
+                    if(store->getPointerOperand() != si.instruction) {
+                        auto semInput = SemInput(store->getPointerOperand(), si.variableName);
+                        vector.push_back(semInput);
+                    }
+                    continue;
+                }
+                if(isa<CallInst>(user)) {
+                    auto call = dyn_cast<CallInst>(user);
+                    if(!call->isIndirectCall() && call->getCalledOperand()->getName() == "fread" && call->getOperand(0) != val) {
+                        auto buffOp = call->getOperand(0);
+                        if(isa<LoadInst>(buffOp)) {
+                            auto loadInst = dyn_cast<LoadInst>(buffOp);
+                            auto buffDef = loadInst->getOperand(0);
+                            auto semInput = SemInput(buffDef, si.variableName);
+                            vector.push_back(semInput);
                         }
+                        continue;
                     }
                 }
+
+                // it's some other sort of instruction
+                // we want to follow references to the value through whatever path they may take to an eventual branch or switch
+                auto addedSi = SemInput(user, si.variableName);
+                vector.push_back(addedSi);
             }
         }
     }

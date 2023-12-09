@@ -1,3 +1,4 @@
+.vscode/
 keypoints/build
 **/callgrind-results.txt
 **/out.log
